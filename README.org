@@ -308,6 +308,9 @@ EOF
 
 * Step 5 - Create argocd application
 
+#+NAME: Create test application
+#+BEGIN_SRC: bash
+cat << EOF | oc --namespace vplugindemo create -f -
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -324,3 +327,5 @@ spec:
     targetRevision: HEAD
     plugin:
       name: argocd-vault-plugin
+EOF
+#+END_SRC
