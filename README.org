@@ -84,6 +84,9 @@ Once vault is deployed and configured we need to do some further configuration t
 #+NAME: Configure openshift
 #+BEGIN_SRC: bash
 # Create namespace and service account
+# This is the namespace that we will be deploying argo in
+# The service account will be used by argo vault plugin
+# to authenticate to vault.
 oc new-project vplugindemo && oc create sa vplugin
 
 # Grant service account admin access so it can view secrets
@@ -97,7 +100,7 @@ oc --namespace vault exec vault-0 -- vault write auth/kubernetes/role/vplugin \
     policies=vplugin \
     ttl=24h
 
-# Create the secret for the argo vault plugin to use to connect to vault
+# Create the secret for the argo vault plugin to use to configure vault connection
 cat << EOF | oc --namespace vplugindemo create -f -
 kind: Secret
 apiVersion: v1
@@ -141,7 +144,6 @@ EOF
 Note: The above operator is pinned specifically to ~v1.8.3~ from the ~gitops-1.8~ release channel and requires a manual approval for installs including this initial install. To approve open the OpenShift user interface "Installed Operators" section.
 
 Once the operator has installed successfully we can create our argocd instance via custom resource.
-
 
 #+NAME: Create argocd custom resource
 #+BEGIN_SRC: bash
@@ -221,6 +223,9 @@ spec:
         name: cmp-plugin
       - name: custom-tools
         emptyDir: {}
+    # Refer https://argocd-vault-plugin.readthedocs.io/en/stable/installation/#initcontainer-and-configuration-via-sidecar
+    # This init container will ensure argo vault plugin will be made available to
+    # the vault plugin sidecar container via volume mount.
     initContainers:
       - args:
           - >-
@@ -239,6 +244,9 @@ spec:
         volumeMounts:
           - mountPath: /custom-tools
             name: custom-tools
+    # This is our sidecar container spec for the vault plugin
+    # Specifically note the mounting of our vault config env vars
+    # via secretRef.
     sidecarContainers:
       - name: avp
         command: [/var/run/argocd/argocd-cmp-server]
@@ -308,6 +316,10 @@ EOF
 
 * Step 5 - Create argocd application
 
+Once argo is running, create this baseline sample application. This will create a secret resource on the cluster that will have the default placeholder values initially.
+
+We can uncomment the ~plugin:~ lines on a later sync to trigger the argo vault plugin. 
+
 #+NAME: Create test application
 #+BEGIN_SRC: bash
 cat << EOF | oc --namespace vplugindemo create -f -
@@ -325,7 +337,8 @@ spec:
     path: .
     repoURL: 'https://github.com/jmhbnz/openshift-gitops-vault-plugin.git'
     targetRevision: HEAD
-    plugin:
-      name: argocd-vault-plugin
+    # Uncomment these lines to trigger the argo vault plugin
+    # plugin:
+    #   name: argocd-vault-plugin
 EOF
 #+END_SRC
