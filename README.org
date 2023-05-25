@@ -1,0 +1,326 @@
+#+TITLE: Deploying OpenShift GitOps with Vault plugin
+#+AUTHOR: James Blair <mail@jamesblair.net>
+#+DATE: <2023-05-25 Thu 09:00>
+
+
+This repository is intended to be a refreshed guide for deploying [[https://github.com/redhat-developer/gitops-operator][OpenShift GitOps]] with the [[https://github.com/argoproj-labs/argocd-vault-plugin][ArgoCD Vault Plugin]] to retrieve secrets from a [[https://github.com/hashicorp/vault][Hashicorp Vault]] instance and inject them into Kubernetes resources.
+
+This guide builds on previous work like [[https://cloud.redhat.com/blog/how-to-use-hashicorp-vault-and-argo-cd-for-gitops-on-openshift][this Red Hat blog]] from 2021 and is updated to use the more modern [[https://argocd-vault-plugin.readthedocs.io/en/stable/installation/#custom-image-and-configuration-via-sidecar][custom plugin sidecar]] approach.
+
+
+* Pre-requisites
+
+This guide assumes you have a running OpenShift 4.10+ cluster with administrative privileges on that cluster. In my case I will be running a Red Hat OpenShift on AWS 4.13 cluster provisioned through the Red Hat demo system.
+
+Additionally, ensure you are logged into the cluster in a terminal environment with ~oc~ and ~helm~ binaries available before proceeding with any of the following steps:
+
+#+NAME: Check pre-requisites
+#+BEGIN_SRC bash
+# Check pre-requisites
+oc version && helm version
+
+# Login to cluster
+oc login --token=<token> --server=<server api url>:6443
+#+END_SRC
+
+
+
+* Step 1 - Deploy vault
+
+Our first step is to deploy an instance of vault, note that this example is deploying vault in dev mode which is not suitable for production.
+
+#+NAME: Create new namespace and deploy vault
+#+BEGIN_SRC: bash
+helm upgrade --install vault vault \
+    --repo https://helm.releases.hashicorp.com \
+    --namespace vault \
+    --create-namespace \
+    --set "global.openshift=true" \
+    --set "server.dev.enabled=true" \
+    --set "injector.enabled=false"
+#+END_SRC
+
+
+* Step 2 - Configure vault
+
+Once vault is deployed we can open a terminal on the vault pod to quickly configure it for the argocd vault plugin.
+
+#+NAME: Configure vault
+#+BEGIN_SRC: bash
+# Open a terminal on vault pod
+oc --namespace vault rsh vault-0
+
+# Enable the kubernetes auth method
+vault auth enable kubernetes
+
+# Write kubernetes auth configuration
+vault write auth/kubernetes/config \
+    token_reviewer_jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+    kubernetes_host="https://$KUBERNETES_PORT_443_TCP_ADDR:443" \
+    kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+
+# Enable kv secrets engine
+vault secrets enable kv
+
+# Create our sample kv
+vault kv put kv/vplugin/supersecret username="myuser" password="password"
+
+# Create policy for secret access
+vault policy write vplugin - <<EOF
+path "kv/data/vplugin/supersecret" {
+  capabilities = ["read"]
+}
+EOF
+
+# Exit from vault shell
+exit
+#+END_SRC
+
+
+* Step 3 - Configure argo vault plugin authentication to vault
+
+Once vault is deployed and configured we need to do some further configuration to enable the soon to be deployed ArgoCD Vault Plugin to be able to authenticate to Vault using a kubernetes service account.
+
+#+NAME: Configure openshift
+#+BEGIN_SRC: bash
+# Create namespace and service account
+oc new-project vplugindemo && oc create sa vplugin
+
+# Grant service account admin access so it can view secrets
+# Do this in a more restrictive way for production...
+oc policy add-role-to-user admin -z vplugin
+
+# Create a role in vault for our service account to authenticate via
+oc --namespace vault exec vault-0 -- vault write auth/kubernetes/role/vplugin \
+    bound_service_account_names=vplugin \
+    bound_service_account_namespaces=vplugindemo \
+    policies=vplugin \
+    ttl=24h
+
+# Create the secret for the argo vault plugin to use to connect to vault
+cat << EOF | oc --namespace vplugindemo create -f -
+kind: Secret
+apiVersion: v1
+metadata:
+  name: vault-configuration
+  namespace: vplugindemo
+stringData:
+  AVP_AUTH_TYPE: k8s
+  AVP_K8S_ROLE: vplugin
+  AVP_TYPE: vault
+  VAULT_ADDR: http://vault.vault.svc:8200
+type: Opaque
+EOF
+#+END_SRC
+
+
+* Step 4 - Deploy openshift gitops
+
+With vault deployed, configured and our auth for the argocd vault plugin configured let's now deploy the OpenShift GitOps operator:
+
+#+NAME: Deploy openshift gitops operator
+#+BEGIN_SRC bash
+cat << EOF | oc --namespace openshift-operators create -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  labels:
+    operators.coreos.com/openshift-gitops-operator.openshift-operators: ""
+  name: openshift-gitops-operator
+  namespace: openshift-operators
+spec:
+  channel: gitops-1.8
+  installPlanApproval: Manual
+  name: openshift-gitops-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: openshift-gitops-operator.v1.8.3
+EOF
+#+BEGIN_SRC
+
+Note: The above operator is pinned specifically to ~v1.8.3~ from the ~gitops-1.8~ release channel and requires a manual approval for installs including this initial install. To approve open the OpenShift user interface "Installed Operators" section.
+
+Once the operator has installed successfully we can create our argocd instance via custom resource.
+
+
+#+NAME: Create argocd custom resource
+#+BEGIN_SRC: bash
+cat << EOF | oc --namespace vplugindemo create -f -
+apiVersion: argoproj.io/v1alpha1
+kind: ArgoCD
+metadata:
+  finalizers:
+    - argoproj.io/finalizer
+  name: argocd
+spec:
+  server:
+    autoscale:
+      enabled: false
+    grpc:
+      ingress:
+        enabled: false
+    ingress:
+      enabled: false
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 125m
+        memory: 128Mi
+    route:
+      enabled: true
+    service:
+      type: ''
+  grafana:
+    enabled: false
+    ingress:
+      enabled: false
+    route:
+      enabled: false
+  monitoring:
+    enabled: false
+  notifications:
+    enabled: false
+  prometheus:
+    enabled: false
+    ingress:
+      enabled: false
+    route:
+      enabled: false
+  initialSSHKnownHosts: {}
+  sso:
+    dex:
+      openShiftOAuth: true
+      resources:
+        limits:
+          cpu: 500m
+          memory: 256Mi
+        requests:
+          cpu: 250m
+          memory: 128Mi
+    provider: dex
+  rbac:
+    defaultPolicy: ''
+    policy: |
+      g, system:cluster-admins, role:admin
+    scopes: '[groups]'
+  repo:
+    resources:
+      limits:
+        cpu: '1'
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+    serviceaccount: vplugin
+    mountsatoken: true
+    volumes:
+      - configMap:
+          name: cmp-plugin
+        name: cmp-plugin
+      - name: custom-tools
+        emptyDir: {}
+    initContainers:
+      - args:
+          - >-
+            curl -Lo /custom-tools/argocd-vault-plugin
+            https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v${AVP_VERSION}/argocd-vault-plugin_${AVP_VERSION}_linux_amd64
+            && chmod +x /custom-tools/argocd-vault-plugin
+        command:
+          - /bin/bash
+          - '-c'
+        env:
+          - name: AVP_VERSION
+            value: 1.8.0
+        image: 'registry.redhat.io/ubi8/ubi:latest'
+        name: download-tools
+        resources: {}
+        volumeMounts:
+          - mountPath: /custom-tools
+            name: custom-tools
+    sidecarContainers:
+      - name: avp
+        command: [/var/run/argocd/argocd-cmp-server]
+        envFrom:
+          - secretRef:
+              name: vault-configuration
+        image: registry.access.redhat.com/ubi8
+        securityContext:
+          runAsNonRoot: true
+        volumeMounts:
+          - mountPath: /var/run/argocd
+            name: var-files
+          - mountPath: /home/argocd/cmp-server/plugins
+            name: plugins
+          - mountPath: /tmp
+            name: tmp
+
+          # Register plugins into sidecar
+          - mountPath: /home/argocd/cmp-server/config/plugin.yaml
+            subPath: avp.yaml
+            name: cmp-plugin
+
+          # Important: Mount tools into $PATH
+          - name: custom-tools
+            subPath: argocd-vault-plugin
+            mountPath: /usr/local/bin/argocd-vault-plugin
+  resourceExclusions: |
+    - apiGroups:
+      - tekton.dev
+      clusters:
+      - '*'
+      kinds:
+      - TaskRun
+      - PipelineRun        
+  ha:
+    enabled: false
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 250m
+        memory: 128Mi
+  tls:
+    ca: {}
+  redis:
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 250m
+        memory: 128Mi
+  controller:
+    processors: {}
+    resources:
+      limits:
+        cpu: '2'
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 1Gi
+    sharding: {}
+EOF
+#+END_SRC
+
+
+* Step 5 - Create argocd application
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: test
+  namespace: vplugindemo
+spec:
+  destination:
+    namespace: vplugindemo
+    server: 'https://kubernetes.default.svc'
+  project: default
+  source:
+    path: .
+    repoURL: 'https://github.com/jmhbnz/openshift-gitops-vault-plugin.git'
+    targetRevision: HEAD
+    plugin:
+      name: argocd-vault-plugin
