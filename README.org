@@ -1,4 +1,4 @@
-#+TITLE: Deploying OpenShift GitOps with Vault plugin
+#+TITLE: OpenShift GitOps with ArgoCD Vault Sidecar
 #+AUTHOR: James Blair <mail@jamesblair.net>
 #+DATE: <2023-05-25 Thu 09:00>
 
@@ -6,6 +6,8 @@
 This repository is intended to be a refreshed guide for deploying [[https://github.com/redhat-developer/gitops-operator][OpenShift GitOps]] with the [[https://github.com/argoproj-labs/argocd-vault-plugin][ArgoCD Vault Plugin]] to retrieve secrets from a [[https://github.com/hashicorp/vault][Hashicorp Vault]] instance and inject them into Kubernetes resources.
 
 This guide builds on previous work like [[https://cloud.redhat.com/blog/how-to-use-hashicorp-vault-and-argo-cd-for-gitops-on-openshift][this Red Hat blog]] from 2021 and is updated to use the more modern [[https://argocd-vault-plugin.readthedocs.io/en/stable/installation/#custom-image-and-configuration-via-sidecar][custom plugin sidecar]] approach.
+
+[[./images/openshift-gitops-operator.png]]
 
 
 * Pre-requisites
@@ -24,10 +26,9 @@ oc login --token=<token> --server=<server api url>:6443
 #+END_SRC
 
 
-
 * Step 1 - Deploy vault
 
-Our first step is to deploy an instance of vault, note that this example is deploying vault in dev mode which is not suitable for production.
+Our first step is to deploy an instance of vault, note that this example is deploying vault in dev mode which is not suitable for production. If you already have a vault instance running you can skip this step.
 
 #+NAME: Create new namespace and deploy vault
 #+BEGIN_SRC: bash
@@ -43,37 +44,17 @@ helm upgrade --install vault vault \
 
 * Step 2 - Configure vault
 
-Once vault is deployed we can open a terminal on the vault pod to quickly configure it for the argocd vault plugin.
+Once we have a vault instance deployed we can run a shell script against the vault pod to quickly configure it for this demo using the excellent ~vault~ cli.
+
+The configuration script will configure the [[https://developer.hashicorp.com/vault/docs/auth/kubernetes][kubernetes auth method]] for vault, enable a kv-v2 secret store, create a test secret and an access policy for that secret.
 
 #+NAME: Configure vault
 #+BEGIN_SRC: bash
-# Open a terminal on vault pod
-oc --namespace vault rsh vault-0
+# Copy our config shell script to the vault pod
+oc --namespace vault cp 1-vault/configure-vault.sh vault-0:/tmp/configure-vault.sh
 
-# Enable the kubernetes auth method
-vault auth enable kubernetes
-
-# Write kubernetes auth configuration
-vault write auth/kubernetes/config \
-    token_reviewer_jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
-    kubernetes_host="https://$KUBERNETES_PORT_443_TCP_ADDR:443" \
-    kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-
-# Enable kv secrets engine
-vault secrets enable -version=2 kv
-
-# Create our sample kv
-vault kv put kv/vplugin/supersecret username="myuser" password="password"
-
-# Create policy for secret access
-vault policy write vplugin - <<EOF
-path "kv/*" {
-  capabilities = ["read"]
-}
-EOF
-
-# Exit from vault shell
-exit
+# Run the script remotely in the vault pod
+oc --namespace vault exec vault-0 -t -- sh -c 'cd /tmp && ./configure-vault.sh'
 #+END_SRC
 
 
