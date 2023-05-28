@@ -60,14 +60,14 @@ vault write auth/kubernetes/config \
     kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 
 # Enable kv secrets engine
-vault secrets enable kv
+vault secrets enable -version=2 kv
 
 # Create our sample kv
 vault kv put kv/vplugin/supersecret username="myuser" password="password"
 
 # Create policy for secret access
 vault policy write vplugin - <<EOF
-path "kv/data/vplugin/supersecret" {
+path "kv/*" {
   capabilities = ["read"]
 }
 EOF
@@ -117,6 +117,40 @@ EOF
 #+END_SRC
 
 
+Create configmap for cmp-plugin.
+
+#+NAME: Create cmp-plugin configmap
+#+BEGIN_SRC bash
+cat << EOF | oc --namespace vplugindemo create -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cmp-plugin
+data:
+  avp.yaml: |
+    apiVersion: argoproj.io/v1alpha1
+    kind: ConfigManagementPlugin
+    metadata:
+      name: argocd-vault-plugin
+    spec:
+      allowConcurrency: true
+      discover:
+        find:
+          command:
+            - sh
+            - "-c"
+            - "find . -name '*.yaml' | xargs -I {} grep \"<path\\|avp\\.kubernetes\\.io\" {} | grep ."
+      generate:
+        command:
+          - argocd-vault-plugin
+          - generate
+          - "."
+      lockRepo: false
+
+EOF
+#+END_SRC
+
+
 * Step 4 - Deploy openshift gitops
 
 With vault deployed, configured and our auth for the argocd vault plugin configured let's now deploy the OpenShift GitOps operator:
@@ -133,7 +167,7 @@ metadata:
   namespace: openshift-operators
 spec:
   channel: gitops-1.8
-  installPlanApproval: Manual
+  installPlanApproval: Automatic
   name: openshift-gitops-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
@@ -141,7 +175,7 @@ spec:
 EOF
 #+BEGIN_SRC
 
-Note: The above operator is pinned specifically to ~v1.8.3~ from the ~gitops-1.8~ release channel and requires a manual approval for installs including this initial install. To approve open the OpenShift user interface "Installed Operators" section.
+Note: The above operator is pinned specifically to ~v1.8.3~ from the ~gitops-1.8~ release channel.
 
 Once the operator has installed successfully we can create our argocd instance via custom resource.
 
@@ -156,65 +190,16 @@ metadata:
   name: argocd
 spec:
   server:
-    autoscale:
-      enabled: false
-    grpc:
-      ingress:
-        enabled: false
     ingress:
       enabled: false
-    resources:
-      limits:
-        cpu: 500m
-        memory: 256Mi
-      requests:
-        cpu: 125m
-        memory: 128Mi
     route:
       enabled: true
-    service:
-      type: ''
-  grafana:
-    enabled: false
-    ingress:
-      enabled: false
-    route:
-      enabled: false
-  monitoring:
-    enabled: false
-  notifications:
-    enabled: false
-  prometheus:
-    enabled: false
-    ingress:
-      enabled: false
-    route:
-      enabled: false
-  initialSSHKnownHosts: {}
-  sso:
-    dex:
-      openShiftOAuth: true
-      resources:
-        limits:
-          cpu: 500m
-          memory: 256Mi
-        requests:
-          cpu: 250m
-          memory: 128Mi
-    provider: dex
   rbac:
     defaultPolicy: ''
     policy: |
       g, system:cluster-admins, role:admin
     scopes: '[groups]'
   repo:
-    resources:
-      limits:
-        cpu: '1'
-        memory: 1Gi
-      requests:
-        cpu: 250m
-        memory: 256Mi
     serviceaccount: vplugin
     mountsatoken: true
     volumes:
@@ -230,14 +215,11 @@ spec:
       - args:
           - >-
             curl -Lo /custom-tools/argocd-vault-plugin
-            https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v${AVP_VERSION}/argocd-vault-plugin_${AVP_VERSION}_linux_amd64
+            https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v1.8.0/argocd-vault-plugin_1.8.0_linux_amd64
             && chmod +x /custom-tools/argocd-vault-plugin
         command:
           - /bin/bash
           - '-c'
-        env:
-          - name: AVP_VERSION
-            value: 1.8.0
         image: 'registry.redhat.io/ubi8/ubi:latest'
         name: download-tools
         resources: {}
@@ -273,45 +255,10 @@ spec:
           - name: custom-tools
             subPath: argocd-vault-plugin
             mountPath: /usr/local/bin/argocd-vault-plugin
-  resourceExclusions: |
-    - apiGroups:
-      - tekton.dev
-      clusters:
-      - '*'
-      kinds:
-      - TaskRun
-      - PipelineRun        
-  ha:
-    enabled: false
-    resources:
-      limits:
-        cpu: 500m
-        memory: 256Mi
-      requests:
-        cpu: 250m
-        memory: 128Mi
-  tls:
-    ca: {}
-  redis:
-    resources:
-      limits:
-        cpu: 500m
-        memory: 256Mi
-      requests:
-        cpu: 250m
-        memory: 128Mi
-  controller:
-    processors: {}
-    resources:
-      limits:
-        cpu: '2'
-        memory: 2Gi
-      requests:
-        cpu: 250m
-        memory: 1Gi
-    sharding: {}
 EOF
 #+END_SRC
+
+#+RESULTS: Deploy openshift gitops operator
 
 
 * Step 5 - Create argocd application
@@ -337,8 +284,5 @@ spec:
     path: .
     repoURL: 'https://github.com/jmhbnz/openshift-gitops-vault-plugin.git'
     targetRevision: HEAD
-    # Uncomment these lines to trigger the argo vault plugin
-    # plugin:
-    #   name: argocd-vault-plugin
 EOF
 #+END_SRC
