@@ -58,17 +58,17 @@ oc --namespace vault exec vault-0 -t -- sh -c 'cd /tmp && ./configure-vault.sh'
 #+END_SRC
 
 
-* Step 3 - Configure argo vault plugin authentication to vault
+* Step 3 - Configure argocd vault plugin authentication to vault
 
-Once vault is deployed and configured we need to do some further configuration to enable the soon to be deployed ArgoCD Vault Plugin to be able to authenticate to Vault using a kubernetes service account.
+Once vault is deployed and configured we need to do some further configuration to enable our soon to be deployed ArgoCD Vault Plugin to be able to authenticate to Vault using a kubernetes service account.
 
 #+NAME: Configure openshift
 #+BEGIN_SRC: bash
-# Create namespace and service account
-# This is the namespace that we will be deploying argo in
-# The service account will be used by argo vault plugin
-# to authenticate to vault.
-oc new-project vplugindemo && oc create sa vplugin
+# Create namespace that we will deploy argocd into
+oc new-project vplugindemo
+
+# Create the service account to be used by argo vault plugin to auth to vault
+oc create serviceaccount vplugin
 
 # Grant service account admin access so it can view secrets
 # Do this in a more restrictive way for production...
@@ -82,19 +82,8 @@ oc --namespace vault exec vault-0 -- vault write auth/kubernetes/role/vplugin \
     ttl=24h
 
 # Create the secret for the argo vault plugin to use to configure vault connection
-cat << EOF | oc --namespace vplugindemo create -f -
-kind: Secret
-apiVersion: v1
-metadata:
-  name: vault-configuration
-  namespace: vplugindemo
-stringData:
-  AVP_AUTH_TYPE: k8s
-  AVP_K8S_ROLE: vplugin
-  AVP_TYPE: vault
-  VAULT_ADDR: http://vault.vault.svc:8200
-type: Opaque
-EOF
+# 
+oc --namespace vplugindemo create -f 2-argocd/secret-vault-configuration.yaml
 #+END_SRC
 
 
@@ -102,33 +91,7 @@ Create configmap for cmp-plugin.
 
 #+NAME: Create cmp-plugin configmap
 #+BEGIN_SRC bash
-cat << EOF | oc --namespace vplugindemo create -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cmp-plugin
-data:
-  avp.yaml: |
-    apiVersion: argoproj.io/v1alpha1
-    kind: ConfigManagementPlugin
-    metadata:
-      name: argocd-vault-plugin
-    spec:
-      allowConcurrency: true
-      discover:
-        find:
-          command:
-            - sh
-            - "-c"
-            - "find . -name '*.yaml' | xargs -I {} grep \"<path\\|avp\\.kubernetes\\.io\" {} | grep ."
-      generate:
-        command:
-          - argocd-vault-plugin
-          - generate
-          - "."
-      lockRepo: false
-
-EOF
+oc --namespace vplugindemo create -f 2-argocd/configmap-plugin.yaml
 #+END_SRC
 
 
@@ -138,22 +101,7 @@ With vault deployed, configured and our auth for the argocd vault plugin configu
 
 #+NAME: Deploy openshift gitops operator
 #+BEGIN_SRC bash
-cat << EOF | oc --namespace openshift-operators create -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  labels:
-    operators.coreos.com/openshift-gitops-operator.openshift-operators: ""
-  name: openshift-gitops-operator
-  namespace: openshift-operators
-spec:
-  channel: gitops-1.8
-  installPlanApproval: Automatic
-  name: openshift-gitops-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-  startingCSV: openshift-gitops-operator.v1.8.3
-EOF
+oc --namespace openshift-operators create -f 2-argocd/subscription-gitops.yaml
 #+BEGIN_SRC
 
 Note: The above operator is pinned specifically to ~v1.8.3~ from the ~gitops-1.8~ release channel.
@@ -162,81 +110,7 @@ Once the operator has installed successfully we can create our argocd instance v
 
 #+NAME: Create argocd custom resource
 #+BEGIN_SRC: bash
-cat << EOF | oc --namespace vplugindemo create -f -
-apiVersion: argoproj.io/v1alpha1
-kind: ArgoCD
-metadata:
-  finalizers:
-    - argoproj.io/finalizer
-  name: argocd
-spec:
-  server:
-    ingress:
-      enabled: false
-    route:
-      enabled: true
-  rbac:
-    defaultPolicy: ''
-    policy: |
-      g, system:cluster-admins, role:admin
-    scopes: '[groups]'
-  repo:
-    serviceaccount: vplugin
-    mountsatoken: true
-    volumes:
-      - configMap:
-          name: cmp-plugin
-        name: cmp-plugin
-      - name: custom-tools
-        emptyDir: {}
-    # Refer https://argocd-vault-plugin.readthedocs.io/en/stable/installation/#initcontainer-and-configuration-via-sidecar
-    # This init container will ensure argo vault plugin will be made available to
-    # the vault plugin sidecar container via volume mount.
-    initContainers:
-      - args:
-          - >-
-            curl -Lo /custom-tools/argocd-vault-plugin
-            https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v1.8.0/argocd-vault-plugin_1.8.0_linux_amd64
-            && chmod +x /custom-tools/argocd-vault-plugin
-        command:
-          - /bin/bash
-          - '-c'
-        image: 'registry.redhat.io/ubi8/ubi:latest'
-        name: download-tools
-        resources: {}
-        volumeMounts:
-          - mountPath: /custom-tools
-            name: custom-tools
-    # This is our sidecar container spec for the vault plugin
-    # Specifically note the mounting of our vault config env vars
-    # via secretRef.
-    sidecarContainers:
-      - name: avp
-        command: [/var/run/argocd/argocd-cmp-server]
-        envFrom:
-          - secretRef:
-              name: vault-configuration
-        image: registry.access.redhat.com/ubi8
-        securityContext:
-          runAsNonRoot: true
-        volumeMounts:
-          - mountPath: /var/run/argocd
-            name: var-files
-          - mountPath: /home/argocd/cmp-server/plugins
-            name: plugins
-          - mountPath: /tmp
-            name: tmp
-
-          # Register plugins into sidecar
-          - mountPath: /home/argocd/cmp-server/config/plugin.yaml
-            subPath: avp.yaml
-            name: cmp-plugin
-
-          # Important: Mount tools into $PATH
-          - name: custom-tools
-            subPath: argocd-vault-plugin
-            mountPath: /usr/local/bin/argocd-vault-plugin
-EOF
+oc --namespace vplugindemo create -f 2-argocd/crd-argocd.yaml
 #+END_SRC
 
 #+RESULTS: Deploy openshift gitops operator
@@ -250,20 +124,5 @@ We can uncomment the ~plugin:~ lines on a later sync to trigger the argo vault p
 
 #+NAME: Create test application
 #+BEGIN_SRC: bash
-cat << EOF | oc --namespace vplugindemo create -f -
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: test
-  namespace: vplugindemo
-spec:
-  destination:
-    namespace: vplugindemo
-    server: 'https://kubernetes.default.svc'
-  project: default
-  source:
-    path: .
-    repoURL: 'https://github.com/jmhbnz/openshift-gitops-vault-plugin.git'
-    targetRevision: HEAD
-EOF
+oc --namespace vplugindemo create -f 2-argocd/application-example.yaml
 #+END_SRC

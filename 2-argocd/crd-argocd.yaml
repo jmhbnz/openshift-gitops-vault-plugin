@@ -1,0 +1,74 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ArgoCD
+metadata:
+  finalizers:
+    - argoproj.io/finalizer
+  name: argocd
+spec:
+  server:
+    ingress:
+      enabled: false
+    route:
+      enabled: true
+  rbac:
+    defaultPolicy: ''
+    policy: |
+      g, system:cluster-admins, role:admin
+    scopes: '[groups]'
+  repo:
+    serviceaccount: vplugin
+    mountsatoken: true
+    volumes:
+      - configMap:
+          name: cmp-plugin
+        name: cmp-plugin
+      - name: custom-tools
+        emptyDir: {}
+    # Refer https://argocd-vault-plugin.readthedocs.io/en/stable/installation/#initcontainer-and-configuration-via-sidecar
+    # This init container will ensure argo vault plugin will be made available to
+    # the vault plugin sidecar container via volume mount.
+    initContainers:
+      - args:
+          - >-
+            curl -Lo /custom-tools/argocd-vault-plugin
+            https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v1.8.0/argocd-vault-plugin_1.8.0_linux_amd64
+            && chmod +x /custom-tools/argocd-vault-plugin
+        command:
+          - /bin/bash
+          - '-c'
+        image: 'registry.redhat.io/ubi8/ubi:latest'
+        name: download-tools
+        resources: {}
+        volumeMounts:
+          - mountPath: /custom-tools
+            name: custom-tools
+    # This is our sidecar container spec for the vault plugin
+    # Specifically note the mounting of our vault config env vars
+    # via secretRef.
+    sidecarContainers:
+      - name: avp
+        command: [/var/run/argocd/argocd-cmp-server]
+        envFrom:
+          - secretRef:
+              name: vault-configuration
+        image: registry.access.redhat.com/ubi8
+        securityContext:
+          runAsNonRoot: true
+        volumeMounts:
+          - mountPath: /var/run/argocd
+            name: var-files
+          - mountPath: /home/argocd/cmp-server/plugins
+            name: plugins
+          - mountPath: /tmp
+            name: tmp
+
+          # Register plugins into sidecar
+          - mountPath: /home/argocd/cmp-server/config/plugin.yaml
+            subPath: avp.yaml
+            name: cmp-plugin
+
+          # Important: Mount tools into $PATH
+          - name: custom-tools
+            subPath: argocd-vault-plugin
+            mountPath: /usr/local/bin/argocd-vault-plugin
