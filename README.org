@@ -46,7 +46,7 @@ helm upgrade --install vault vault \
 
 Once we have a vault instance deployed we can run a shell script against the vault pod to quickly configure it for this demo using the excellent ~vault~ cli.
 
-The configuration script will configure the [[https://developer.hashicorp.com/vault/docs/auth/kubernetes][kubernetes auth method]] for vault, enable a kv-v2 secret store, create a test secret and an access policy for that secret.
+The configuration script will configure the [[https://developer.hashicorp.com/vault/docs/auth/kubernetes][kubernetes auth method]] for vault, enable a ~kv-v2~ secret store, create a test secret and an access policy for that secret.
 
 #+NAME: Configure vault
 #+BEGIN_SRC: bash
@@ -58,7 +58,7 @@ oc --namespace vault exec vault-0 -t -- sh -c 'cd /tmp && ./configure-vault.sh'
 #+END_SRC
 
 
-* Step 3 - Configure argocd vault plugin authentication to vault
+* Step 3 - Configure argocd vault plugin auth to vault
 
 Once vault is deployed and configured we need to do some further configuration to enable our soon to be deployed ArgoCD Vault Plugin to be able to authenticate to Vault using a kubernetes service account.
 
@@ -70,24 +70,24 @@ oc new-project vplugindemo
 # Create the service account to be used by argo vault plugin to auth to vault
 oc create serviceaccount vplugin
 
-# Grant service account admin access so it can view secrets
-# Do this in a more restrictive way for production...
-oc policy add-role-to-user admin -z vplugin
-
-# Create a role in vault for our service account to authenticate via
+# Create a role in vault to bind our service account to the policy we created earlier
 oc --namespace vault exec vault-0 -- vault write auth/kubernetes/role/vplugin \
     bound_service_account_names=vplugin \
     bound_service_account_namespaces=vplugindemo \
     policies=vplugin \
-    ttl=24h
+    ttl=1h
 
 # Create the secret for the argo vault plugin to use to configure vault connection
-# 
+# Supported parameters list: https://argocd-vault-plugin.readthedocs.io/en/stable/config/
 oc --namespace vplugindemo create -f 2-argocd/secret-vault-configuration.yaml
 #+END_SRC
 
 
-Create configmap for cmp-plugin.
+* Step 4 - Configure argocd vault plugin processing
+
+With authentication configured, we now need to configure what our ArgoCD Vault Plugin sidecar will actually do. This is a two step process, firstly specifying a ~discover~ command, then a following ~generate~ command.
+
+Refer to [[https://argocd-vault-plugin.readthedocs.io/en/stable/usage/#with-helm][these documented examples]] including for ~helm~ or ~kustomize~ based applications.  In our example we will take the most basic approach of discovering files that contain an annotation, then using ~argocd-vault-plugin generate .~ to template the files.
 
 #+NAME: Create cmp-plugin configmap
 #+BEGIN_SRC bash
@@ -95,16 +95,17 @@ oc --namespace vplugindemo create -f 2-argocd/configmap-plugin.yaml
 #+END_SRC
 
 
-* Step 4 - Deploy openshift gitops
+* Step 5 - Deploy openshift gitops
 
-With vault deployed, configured and our auth for the argocd vault plugin configured let's now deploy the OpenShift GitOps operator:
+With vault deployed, configured and our argocd vault plugin configured, let's now deploy the OpenShift GitOps operator.
+
+Note: The below operator subscription is pinned specifically to ~v1.8.3~ from the ~gitops-1.8~ release channel.
 
 #+NAME: Deploy openshift gitops operator
 #+BEGIN_SRC bash
 oc --namespace openshift-operators create -f 2-argocd/subscription-gitops.yaml
-#+BEGIN_SRC
+#+END_SRC
 
-Note: The above operator is pinned specifically to ~v1.8.3~ from the ~gitops-1.8~ release channel.
 
 Once the operator has installed successfully we can create our argocd instance via custom resource.
 
@@ -113,16 +114,12 @@ Once the operator has installed successfully we can create our argocd instance v
 oc --namespace vplugindemo create -f 2-argocd/crd-argocd.yaml
 #+END_SRC
 
-#+RESULTS: Deploy openshift gitops operator
 
+* Step 6 - Create argocd application
 
-* Step 5 - Create argocd application
+Once argo is running, create this baseline sample application. This will create a secret resource on the cluster that will have the default placeholder values replaced with values that come from vault! 🎉
 
-Once argo is running, create this baseline sample application. This will create a secret resource on the cluster that will have the default placeholder values initially.
-
-We can uncomment the ~plugin:~ lines on a later sync to trigger the argo vault plugin. 
-
-#+NAME: Create test application
+#+NAME: Create example application
 #+BEGIN_SRC: bash
 oc --namespace vplugindemo create -f 2-argocd/application-example.yaml
 #+END_SRC
