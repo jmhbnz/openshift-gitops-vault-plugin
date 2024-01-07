@@ -99,7 +99,7 @@ oc --namespace vplugindemo create -f 2-argocd/configmap-plugin.yaml
 
 With vault deployed, configured and our argocd vault plugin configured, let's now deploy the OpenShift GitOps operator.
 
-Note: The below operator subscription is pinned specifically to ~v1.8.3~ from the ~gitops-1.8~ release channel.
+Note: The below operator subscription is pinned specifically to ~v1.11.0~ from the ~gitops-1.11~ release channel.
 
 #+NAME: Deploy openshift gitops operator
 #+BEGIN_SRC bash
@@ -117,9 +117,17 @@ oc --namespace vplugindemo create -f 2-argocd/crd-argocd.yaml
 
 * Step 6 - Create argocd application
 
-Once argo is running, create this baseline sample application. This will create a secret resource on the cluster that will have the default placeholder values replaced with values that come from vault! 🎉
+Once argo is running, create this baseline sample application. This will create a ~secret~ resource on the cluster that will have the default placeholder values replaced with values that come from vault! 🎉
 
 #+NAME: Create example application
 #+BEGIN_SRC: bash
 oc --namespace vplugindemo create -f 2-argocd/application-example.yaml
+#+END_SRC
+
+Once the application has been created it should automatically sync. We can check the contents of the secret as follows:
+
+#+NAME: Review secret contents
+#+BEGIN_SRC: bash
+oc get secret example-secret -o jsonpath={.data.username} | base64 --decode
+oc get secret example-secret -o jsonpath={.data.password} | base64 --decode
 #+END_SRC
