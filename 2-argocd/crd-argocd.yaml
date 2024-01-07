@@ -1,5 +1,5 @@
 ---
-apiVersion: argoproj.io/v1alpha1
+apiVersion: argoproj.io/v1beta1
 kind: ArgoCD
 metadata:
   finalizers:
@@ -16,6 +16,7 @@ spec:
     policy: |
       g, system:cluster-admins, role:admin
     scopes: '[groups]'
+  applicationSet: {}
   repo:
     serviceaccount: vplugin
     mountsatoken: true
@@ -32,12 +33,12 @@ spec:
       - args:
           - >-
             curl -Lo /custom-tools/argocd-vault-plugin
-            https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v1.8.0/argocd-vault-plugin_1.8.0_linux_amd64
+            https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v1.17.0/argocd-vault-plugin_1.17.0_linux_amd64
             && chmod +x /custom-tools/argocd-vault-plugin
         command:
           - /bin/bash
           - '-c'
-        image: 'registry.redhat.io/ubi8/ubi:latest'
+        image: 'registry.redhat.io/ubi9/ubi:latest'
         name: download-tools
         resources: {}
         volumeMounts:
@@ -52,7 +53,7 @@ spec:
         envFrom:
           - secretRef:
               name: vault-configuration
-        image: registry.access.redhat.com/ubi8
+        image: registry.access.redhat.com/ubi9
         securityContext:
           runAsNonRoot: true
         volumeMounts:
