@@ -13,3 +13,6 @@ spec:
     repoURL: 'https://github.com/jmhbnz/openshift-gitops-vault-plugin.git'
     targetRevision: HEAD
     path: 3-application
+  syncPolicy:
+    automated:
+      prune: true
