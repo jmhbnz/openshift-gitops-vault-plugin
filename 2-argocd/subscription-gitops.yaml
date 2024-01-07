@@ -5,9 +5,9 @@ metadata:
   name: openshift-gitops-operator
   namespace: openshift-operators
 spec:
-  channel: gitops-1.8
+  channel: gitops-1.11
   installPlanApproval: Automatic
   name: openshift-gitops-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
-  startingCSV: openshift-gitops-operator.v1.8.3
+  startingCSV: openshift-gitops-operator.v1.11.0
