@@ -1,0 +1,10 @@
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: openshift-gitops-operator
+  labels:
+    kubernetes.io/metadata.name: openshift-gitops-operator
+spec:
+  finalizers:
+    - kubernetes

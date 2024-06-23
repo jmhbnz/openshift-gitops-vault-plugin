@@ -1,6 +1,6 @@
 #+TITLE: OpenShift GitOps with ArgoCD Vault Sidecar
 #+AUTHOR: James Blair <mail@jamesblair.net>
-#+DATE: <2023-05-25 Thu 09:00>
+#+DATE: <2024-06-23 Sun 13:00>
 
 
 This repository is intended to be a refreshed guide for deploying [[https://github.com/redhat-developer/gitops-operator][OpenShift GitOps]] with the [[https://github.com/argoproj-labs/argocd-vault-plugin][ArgoCD Vault Plugin]] to retrieve secrets from a [[https://github.com/hashicorp/vault][Hashicorp Vault]] instance and inject them into Kubernetes resources.
@@ -12,7 +12,7 @@ This guide builds on previous work like [[https://cloud.redhat.com/blog/how-to-u
 
 * Pre-requisites
 
-This guide assumes you have a running OpenShift 4.10+ cluster with administrative privileges on that cluster. In my case I will be running a Red Hat OpenShift on AWS 4.13 cluster provisioned through the Red Hat demo system.
+This guide assumes you have a running OpenShift 4.12+ cluster with administrative privileges on that cluster. In my case I will be running a Red Hat OpenShift 4.15 cluster provisioned through the Red Hat demo system.
 
 Additionally, ensure you are logged into the cluster in a terminal environment with ~oc~ and ~helm~ binaries available before proceeding with any of the following steps:
 
@@ -99,11 +99,13 @@ oc --namespace vplugindemo create -f 2-argocd/configmap-plugin.yaml
 
 With vault deployed, configured and our argocd vault plugin configured, let's now deploy the OpenShift GitOps operator.
 
-Note: The below operator subscription is pinned specifically to ~v1.11.0~ from the ~gitops-1.11~ release channel.
+Note: The below operator subscription is pinned specifically to ~v1.12.3~ from the ~gitops-1.12~ release channel.
 
 #+NAME: Deploy openshift gitops operator
 #+BEGIN_SRC bash
-oc --namespace openshift-operators create -f 2-argocd/subscription-gitops.yaml
+oc --namespace openshift-gitops-operator create -f 2-argocd/namespace-gitops.yaml
+oc --namespace openshift-gitops-operator create -f 2-argocd/operatorgroup-gitops.yaml
+oc --namespace openshift-gitops-operator create -f 2-argocd/subscription-gitops.yaml
 #+END_SRC
 
 
