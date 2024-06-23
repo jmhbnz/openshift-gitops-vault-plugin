@@ -33,7 +33,7 @@ spec:
       - args:
           - >-
             curl -Lo /custom-tools/argocd-vault-plugin
-            https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v1.17.0/argocd-vault-plugin_1.17.0_linux_amd64
+            https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v1.18.1/argocd-vault-plugin_1.18.1_linux_amd64
             && chmod +x /custom-tools/argocd-vault-plugin
         command:
           - /bin/bash
